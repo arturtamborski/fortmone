@@ -1,0 +1,175 @@
+#!/bin/bash
+
+# VM name as shown in virtualbox
+ARGV0="$(basename "${BASH_SOURCE[0]}")"
+VMNAME="winxp"
+DEBUG=false
+
+
+# -----------------------------------------------------------------------------------------
+trap cleanup SIGINT SIGTERM ERR EXIT
+
+function cleanup() {
+	trap - SIGINT SIGTERM ERR EXIT
+}
+
+function log() {
+  echo >&2 -e "${1-}"
+}
+
+function logx() {
+  echo >&2 -n -e "${1-}"
+}
+
+function die() {
+  local log=$1
+  local code=${2-1} # default exit status 1
+  log "$log"
+  exit "$code"
+}
+
+function checkvm() {
+	# check if the vm exists
+	if ! vboxmanage list vms | cut -d' ' -f1 | grep -w "$VMNAME" &>/dev/null; then
+		log "failed to find VM named '"$VMNAME"', please install it first from the vm/winxp.iso"
+		log "check notes.txt for more info and then run this script"
+		die
+	fi
+}
+
+function poweroffvm() {
+	# power off, for good measure, we want to start from cratch
+	vboxmanage controlvm "$VMNAME" poweroff || true
+
+	# it's not that easy
+	sleep 3
+}
+
+function bootvm() {
+	# turn off audio
+	vboxmanage modifyvm "$VMNAME" --audio none
+
+	# start the vm
+	if [[ "$DEBUG" == "true" ]]; then
+		vboxmanage startvm "$VMNAME"
+	else
+		vboxmanage startvm "$VMNAME" --type headless
+	fi
+
+	# recreate build directory
+	rm -r build 2>/dev/null
+	mkdir -p build/
+
+	touch ./build/boot.ppm
+	log "waiting for VM to finish booting..."
+	until diff <(xxd ./cdrom/boot.ppm) <(xxd ./build/boot.ppm) &>/dev/null; do
+		sleep 5
+		logx "..."
+
+		# capture screenshot
+		vboxmanage controlvm "$VMNAME" screenshotpng ./build/boot.png
+		convert ./build/boot.png -crop 20x20+0+0 ./build/boot.ppm
+	done
+
+	# just to be sure
+	sleep 3
+	rm ./build/boot.{ppm,png}
+	log "booting finished"
+}
+
+function createiso() {
+	log "creating the iso file from cdrom directory"
+
+	# copy cdrom, convert to windows format
+	cp -R cdrom/* build/
+	unix2dos build/*.inf
+	unix2dos build/*.bat
+
+	# copy app
+	cp -R app/* build/
+
+	# create iso file
+	mkisofs -input-charset utf-8 -o cdrom.iso build/
+	mv cdrom.iso build/
+}
+
+function mountiso() {
+	log "this should show avaiable IDE controlers"
+	vboxmanage showvminfo "$VMNAME" | grep ide
+	log
+
+	log "unmounting any CDs and and mounting ours"
+	vboxmanage storageattach "$VMNAME" \
+		--storagectl IDE --port 1 --device 0 \
+		--type dvddrive --medium emptydrive
+	vboxmanage storageattach "$VMNAME" \
+		--storagectl IDE --port 1 --device 0 \
+		--type dvddrive --medium ./build/cdrom.iso
+}
+
+function start() {
+	checkvm
+	poweroffvm
+	bootvm
+
+	createiso
+	mountiso
+
+	log
+	log "done, you should be able to get the CMD now"
+	log "run '$ARGV0 connect' in order to connect to cmd.exe"
+}
+
+function stop() {
+	checkvm
+	poweroffvm
+}
+
+function connect() {
+	rlwrap \
+		--pass-sigint-as-sigterm \
+		--pre-given "cd /d C:\cdrom\ " \
+		nc -l -p 2137
+}
+
+function help() {
+	  cat <<EOF
+Usage: $ARGV0 [-v | --verbose] [-d | --debug] [-h | --help]
+Usage: $ARGV0 [-v | --verbose] [-d | --debug] [-n "vmname" | --vm-name "vmname"] <start | stop>
+Usage: $ARGV0 [-v | --verbose] [-d | --debug] connect
+EOF
+  exit
+}
+
+function main() {
+	COMMAND="help"
+
+	while :; do
+		case "${1-}" in
+			# commands
+			start) COMMAND=start ;;
+			stop) COMMAND=stop ;;
+			connect) COMMAND=connect ;;
+
+			# regular flags
+			-h | --help) COMMAND=help ;;
+			-d | --debug) DEBUG=true ;;
+			-v | --verbose) set -x ;;
+
+			# flags with arguments
+			-n | --vm-name) VMNAME="${2-}"; shift ;;
+
+			# input exceptions
+			-?*) die "Unknown option: $1" ;;
+			*) break ;;
+		esac
+		shift
+	done
+
+	eval "$COMMAND"
+}
+
+
+# -----------------------------------------------------------------------------------------
+# entry point
+main "$@"

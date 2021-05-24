@@ -1,0 +1,18 @@
+# sudo apt install <package>
+
+# command   -   package
+
+# for windows
+virtualbox 	(vboxmanage)
+mkisofs 	(genisoimage)
+unix2dos 	(dos2unix)
+
+# for screenshots
+xxd  
+diff 		(diffutils)
+convert 	(imagemagic)
+
+
+# for shell and connection
+nc		(netcat)
+rlwrap		(rlwrap)
